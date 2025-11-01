@@ -1,70 +1,54 @@
-name: Build and upload to PyPI
+name: Build & Publish to PyPI
 
 on:
-  workflow_dispatch:
-  pull_request:
-  push:
-    branches: [main]
   release:
-    types: [published]
+    types: [published]     # publish when a GitHub Release is published
+  workflow_dispatch:
 
 permissions:
   contents: read
-  id-token: write   
+  id-token: write          # required for PyPI Trusted Publishing
+
 jobs:
-  build_wheels:
-    name: Build wheels on ${{ matrix.os }}
+  test:
+    name: Test (${{ matrix.os }} / py${{ matrix.py }})
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
-
+        os: [ubuntu-latest, macos-latest]
+        py: ["3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: ${{ matrix.py }} }
+      - run: python -m pip install -U pip
+      - run: python -m pip install -e .[test] || python -m pip install -e .
+      - run: pytest -q
 
-      - name: Build wheels
-        uses: pypa/cibuildwheel@v3.1.4
-        env:
-          CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-*"
-          CIBW_ARCHS_MACOS: "x86_64 arm64"
-          CIBW_ARCHS_LINUX: "x86_64 aarch64"
-          CIBW_SKIP: "pp* *-musllinux*"
-          CIBW_TEST_COMMAND: "python -c 'import quces; print(getattr(quces, \"__version__\", \"ok\"))'"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: wheel-${{ matrix.os }}
-          path: wheelhouse/*.whl
-          if-no-files-found: error
-
-  build_sdist:
-    name: Build sdist
+  build:
+    name: Build sdist + wheel
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build sdist
-        run: pipx run build --sdist
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: python -m pip install -U pip build
+      - run: python -m build  # creates dist/* (sdist + wheel)
       - uses: actions/upload-artifact@v4
         with:
-          name: sdist
-          path: dist/*.tar.gz
-          if-no-files-found: error
+          name: dist
+          path: dist/*
 
-  upload_pypi:
+  publish:
     name: Publish to PyPI
-    needs: [build_wheels, build_sdist]
+    needs: [test, build]
     runs-on: ubuntu-latest
-    environment: pypi
     if: github.event_name == 'release' && github.event.action == 'published'
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: wheel-*
-          path: dist
-          merge-multiple: true
-      - uses: actions/download-artifact@v4
-        with:
-          name: sdist
+          name: dist
           path: dist
       - name: Publish via OIDC
         uses: pypa/gh-action-pypi-publish@release/v1
